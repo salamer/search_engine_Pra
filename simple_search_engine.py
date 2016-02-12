@@ -136,10 +136,10 @@ class searcher:
 		table_number=0
 
 		for word in words:
-			print word
+#			print word
 			word_row=self.c.execute("SELECT ROWID FROM wordlist WHERE word='%s'" % word).fetchone()
 
-			print word_row
+#			print word_row
 
 			if word_row!=None:
 				word_id=word_row[0]
@@ -160,3 +160,75 @@ class searcher:
 		rows=[row for row in cur]
 
 		return rows,word_ids
+
+	def get_scored_list(self,rows,word_ids):
+		total_scores=dict([(row[0],0) for row in rows])
+
+#		weights=[(1.0,self.frequency_score(rows))]
+
+#		weights=[(1.0,self.location_score(rows))]
+
+		weights=[(1.0,self.frequency_score(rows)),(1.5,self.location_score(rows))]
+
+		for (weight,scores) in weights:
+			for url in total_scores:
+				total_scores[url]+=weight*scores[url]
+
+		return total_scores
+
+	def get_url_name(self,id):
+		return self.c.execute("SELECT url FROM urllist WHERE rowid=%d" % id).fetchone()[0]
+
+	def query(self,q):
+		rows,word_ids=self.get_match_rows(q)
+		scores=self.get_scored_list(rows,word_ids)
+		ranked_scores=sorted([(score,url) for (url,score) in scores.items()],reverse=1)
+		for (score,url_id) in ranked_scores[0:10]:
+			print "%f\t%s" % (score,self.get_url_name(url_id))
+
+	def normalize_scores(self,scores,small_is_better=0):
+		v_small=0.00001
+		if small_is_better:
+			min_score=min(scores.values())
+			return dict([(u,float(min_score)/max(v_small,l)) for (u,l) in scores.items()])
+		else:
+			max_score=max(scores.values())
+			if max_score==0:
+				max_score=v_small
+			return dict([(u,float(c)/max_score) for (u,c) in scores.items()])
+
+	def frequency_score(self,rows):
+		counts=dict([(row[0],0) for row in rows])
+		for row in rows:
+			counts[row[0]]+=1
+		return self.normalize_scores(counts)
+
+	def location_score(self,rows):
+		locations=dict([(row[0],1000000) for row in rows])
+		for row in rows:
+#			print "~~~\n"
+#			print row
+			loc=sum([int(i) for i in row[1:]])
+#			print "loc:",loc
+			if loc<locations[row[0]]:
+				locations[row[0]]=loc
+#			print locations
+		return self.normalize_scores(locations,small_is_better=1)
+
+	def distance_score(self,rows):
+		if len(rows[0])<=2:
+			return dict([(row[0],1.0) for row in rows])
+
+		min_distance=dict([(row[0],10000000) for row in rows])
+
+		for row in rows:
+			dist=sum([abs(row[i]-row[i-1]) for i in range(2,len(row))])
+			if dist<min_distance[row[0]]:
+				min_distance[row[0]]=dist
+		return self.normalize_scores(min_distance,small_is_better=1)
+
+	def in_bound_link_score(self,rows):
+		unique_urls=set([row[0] for row in rows])
+		in_bound_count=dict([(u,self.c.execute("SELECT COUNT(*) FROM link WHERE toid=%d" % u).fetchone()[0]) for u in unique_urls])
+
+		return self.normalize_scores(in_bound_count)
