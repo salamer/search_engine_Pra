@@ -118,6 +118,27 @@ class crawler(object):
 		self.c.execute("CREATE INDEX urlfromidx ON link(fromid)")
 		self.dbcommit()
 
+	def calculate_pagerank(self,iterations=20):
+		self.c.execute("DROP TABLE IF EXISTS pagerank")
+		self.c.execute("CREATE TABLE pagerank(urlid primary key,score)")
+
+		self.c.execute("INSERT INTO pagerank SELECT rowid,1.0 from urllist")
+		self.dbcommit()
+
+		for i in range(iterations):
+			print "Interation %d" % (i)
+			for (urlid,) in self.c.execute("SELECT rowid FROM urllist"):
+				pr=0.15
+
+				for(linker,) in self.c.execute("SELECT DISTINCT fromid FROM link WHERE toid=%d" % urlid):
+					linking_pr=self.c.execute("SELECT score FROM pagerank WHERE urlid=%d" % linker).fetchone()[0]
+
+					linking_count=self.c.execute("SELECT COUNT(*) FROM link WHERE fromid=%d" % linker).fetchone()[0]
+					pr+=0.85*(linking_pr/linking_count)
+				self.c.execute("UPDATE pagerank SET score=%f WHERE urlid=%d" % (pr,urlid))
+			self.dbcommit()
+
+
 
 class searcher:
 	def __init__(self,dbname):
@@ -168,7 +189,10 @@ class searcher:
 
 #		weights=[(1.0,self.location_score(rows))]
 
-		weights=[(1.0,self.frequency_score(rows)),(1.5,self.location_score(rows))]
+		weights=[(1.0,self.frequency_score(rows)),
+				(1.0,self.location_score(rows)),
+				(1.0,self.pagerank_score(rows)),
+				(1.0,self.link_text_score(rows,word_ids))]
 
 		for (weight,scores) in weights:
 			for url in total_scores:
@@ -232,3 +256,24 @@ class searcher:
 		in_bound_count=dict([(u,self.c.execute("SELECT COUNT(*) FROM link WHERE toid=%d" % u).fetchone()[0]) for u in unique_urls])
 
 		return self.normalize_scores(in_bound_count)
+
+	def pagerank_score(self,rows):
+		pageranks=dict([(row[0],self.c.execute("SELECT score FROM pagerank WHERE urldid=%d" % row[0]).fetchone()[0]) for row in rows])
+
+		max_rank=max(pageranks.values())
+		normalized_scores=dict([(u,float(l)/max_rank) for (u,l) in pageranks.items()])
+
+		return normalized_scores
+
+	def link_text_score(self,rows,word_ids):
+		link_scores=dict([(row[0],0) for row in rows])
+		for word_id in word_ids:
+			cur=self.c.execute("SELECT link.fromid,link.toid FROM linkwords,link WHERE wordid=%d AND linkwords.linkid=link.rowid" % wordid)
+			for (fromid,toid) in cur:
+				if toid in link_scores:
+					pr=self.c.execute("SELECT score FROM pagerank WHERE urlid=%d" % fromid).fetchone()[0]
+					link_scores[toid]+=pr
+
+		max_score=max(link_scores.values())
+		normalized_scores=dict([(u,float(1)/max_score) for (u,l) in link_scores.items()])
+		return normalized_scores
